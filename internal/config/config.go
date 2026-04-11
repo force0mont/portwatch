@@ -1,66 +1,81 @@
-// Package config handles loading and parsing of portwatch configuration files.
+// Package config handles loading and validating portwatch configuration.
 package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
-	"github.com/user/portwatch/internal/rules"
+	"github.com/yourorg/portwatch/internal/filter"
 )
 
-// Config holds the top-level portwatch configuration.
+// Config holds the complete portwatch runtime configuration.
 type Config struct {
-	// IntervalSeconds is how often the scanner runs (default: 10).
-	IntervalSeconds int `json:"interval_seconds"`
-	// LogFormat is either "json" or "text" (default: "json").
+	// ScanInterval controls how often the port scanner runs.
+	ScanInterval Duration `json:"scan_interval"`
+	// LogFormat is either "text" or "json".
 	LogFormat string `json:"log_format"`
-	// Rules defines the allow/alert rules evaluated against open ports.
-	Rules []rules.Rule `json:"rules"`
+	// ProcPath is the root used to locate /proc/net files (default "/proc").
+	ProcPath string `json:"proc_path"`
+	// SuppressRules lists ports/CIDRs that should never produce alerts.
+	SuppressRules []filter.Rule `json:"suppress_rules,omitempty"`
 }
 
-// DefaultConfig returns a Config with sensible defaults.
-func DefaultConfig() *Config {
-	return &Config{
-		IntervalSeconds: 10,
-		LogFormat:       "json",
-		Rules:           []rules.Rule{},
+// Duration is a time.Duration that marshals/unmarshals as a string (e.g. "30s").
+type Duration struct{ time.Duration }
+
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("config: invalid duration %q: %w", s, err)
+	}
+	d.Duration = v
+	return nil
+}
+
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Duration.String())
+}
+
+// DefaultConfig returns a Config populated with sensible defaults.
+func DefaultConfig() Config {
+	return Config{
+		ScanInterval: Duration{30 * time.Second},
+		LogFormat:    "text",
+		ProcPath:     "/proc",
 	}
 }
 
-// Load reads a JSON config file from the given path and returns a Config.
-// Missing optional fields are filled with defaults.
-func Load(path string) (*Config, error) {
+// Load reads a JSON config file from path, applying defaults for missing fields.
+// If path is empty the default configuration is returned.
+func Load(path string) (Config, error) {
+	cfg := DefaultConfig()
+	if path == "" {
+		return cfg, nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("config: open %q: %w", path, err)
+		return cfg, fmt.Errorf("config: open %q: %w", path, err)
 	}
 	defer f.Close()
-
-	cfg := DefaultConfig()
-	if err := json.NewDecoder(f).Decode(cfg); err != nil {
-		return nil, fmt.Errorf("config: decode %q: %w", path, err)
+	if err := json.NewDecoder(f).Decode(&cfg); err != nil {
+		return cfg, fmt.Errorf("config: decode: %w", err)
 	}
-
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-
-	return cfg, nil
+	return cfg, validate(cfg)
 }
 
-// Validate checks that the config values are acceptable.
-func (c *Config) Validate() error {
-	if c.IntervalSeconds <= 0 {
-		return fmt.Errorf("config: interval_seconds must be > 0, got %d", c.IntervalSeconds)
+func validate(cfg Config) error {
+	if cfg.ScanInterval.Duration <= 0 {
+		return errors.New("config: scan_interval must be positive")
 	}
-	if c.LogFormat != "json" && c.LogFormat != "text" {
-		return fmt.Errorf("config: log_format must be \"json\" or \"text\", got %q", c.LogFormat)
-	}
-	for i, r := range c.Rules {
-		if err := rules.Validate(r); err != nil {
-			return fmt.Errorf("config: rule[%d]: %w", i, err)
-		}
+	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
+		return fmt.Errorf("config: log_format must be \"text\" or \"json\", got %q", cfg.LogFormat)
 	}
 	return nil
 }
