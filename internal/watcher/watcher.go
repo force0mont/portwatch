@@ -1,50 +1,52 @@
+// Package watcher ties together the scanner, rules engine, state tracker,
+// alerter, filter, throttle, and notifier into a single polling loop.
 package watcher
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/jwhittle933/portwatch/internal/alerter"
-	"github.com/jwhittle933/portwatch/internal/metrics"
-	"github.com/jwhittle933/portwatch/internal/ratelimit"
-	"github.com/jwhittle933/portwatch/internal/rules"
-	"github.com/jwhittle933/portwatch/internal/scanner"
-	"github.com/jwhittle933/portwatch/internal/state"
+	"github.com/user/portwatch/internal/alerter"
+	"github.com/user/portwatch/internal/filter"
+	"github.com/user/portwatch/internal/rules"
+	"github.com/user/portwatch/internal/scanner"
+	"github.com/user/portwatch/internal/state"
+	"github.com/user/portwatch/internal/throttle"
 )
 
-// Watcher orchestrates periodic port scanning, rule evaluation, and alerting.
+// Watcher polls open ports and emits alerts according to configured rules.
 type Watcher struct {
 	scanner  *scanner.Scanner
 	rules    *rules.Engine
-	alerter  *alerter.Alerter
 	state    *state.State
-	metrics  *metrics.Metrics
-	limiter  *ratelimit.Limiter
+	alerter  *alerter.Alerter
+	filter   *filter.Filter
+	throttle *throttle.Throttle
 	interval time.Duration
 }
 
-// New creates a Watcher with default rate-limit settings (burst=3, window=60s).
+// New constructs a Watcher with all dependencies.
 func New(
-	sc *scanner.Scanner,
-	re *rules.Engine,
-	al *alerter.Alerter,
+	s *scanner.Scanner,
+	e *rules.Engine,
 	st *state.State,
-	me *metrics.Metrics,
+	a *alerter.Alerter,
+	f *filter.Filter,
+	th *throttle.Throttle,
 	interval time.Duration,
 ) *Watcher {
 	return &Watcher{
-		scanner:  sc,
-		rules:    re,
-		alerter:  al,
+		scanner:  s,
+		rules:    e,
 		state:    st,
-		metrics:  me,
-		limiter:  ratelimit.New(60*time.Second, 3),
+		alerter:  a,
+		filter:   f,
+		throttle: th,
 		interval: interval,
 	}
 }
 
-// Run starts the watch loop. It blocks until ctx is cancelled.
+// Run starts the polling loop; it returns when ctx is cancelled.
 func (w *Watcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
@@ -54,32 +56,30 @@ func (w *Watcher) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := w.tick(); err != nil {
-				return fmt.Errorf("watcher tick: %w", err)
-			}
+			w.tick()
 		}
 	}
 }
 
-func (w *Watcher) tick() error {
+func (w *Watcher) tick() {
 	ports, err := w.scanner.Scan()
 	if err != nil {
-		return err
+		w.alerter.EmitInfo("scan error: " + err.Error())
+		return
 	}
-	w.metrics.IncScans()
-	w.metrics.AddPorts(len(ports))
-	w.limiter.Purge()
 
 	events := w.state.Diff(ports)
 	for _, ev := range events {
-		action := w.rules.Evaluate(ev.Port)
-		key := fmt.Sprintf("%s:%d", ev.Port.Protocol, ev.Port.Port)
-		if action == rules.ActionAlert && w.limiter.Allow(key) {
-			w.metrics.IncAlerts()
-			w.alerter.EmitAlert(ev)
+		if w.filter.Suppressed(ev.Port, ev.Proto, "") {
+			continue
+		}
+		action := w.rules.Evaluate(ev.Port, ev.Proto)
+		if action == rules.ActionAlert {
+			if w.throttle.Allow(ev.Port, ev.Proto) {
+				w.alerter.EmitAlert(ev)
+			}
 		} else {
 			w.alerter.EmitInfo(ev)
 		}
 	}
-	return nil
 }
