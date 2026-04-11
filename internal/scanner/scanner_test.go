@@ -68,6 +68,22 @@ func TestScan_UDP_Port(t *testing.T) {
 	assert.Equal(t, UDP, ports[0].Protocol)
 }
 
+func TestScan_LoopbackAddress(t *testing.T) {
+	// 127.0.0.1:8080 in hex little-endian = 0100007F:1F90, state 0A = LISTEN
+	tcpContent := tcpHeader + "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 11111 1\n"
+	udpContent := udpHeader
+
+	procPath := fakeProcNet(t, tcpContent, udpContent)
+	s := NewWithProcPath(procPath)
+
+	ports, err := s.Scan()
+	require.NoError(t, err)
+	require.Len(t, ports, 1)
+	assert.Equal(t, 8080, ports[0].Port)
+	assert.Equal(t, TCP, ports[0].Protocol)
+	assert.Equal(t, "127.0.0.1", ports[0].Address)
+}
+
 func TestParseHexAddr(t *testing.T) {
 	tests := []struct {
 		hex     string
