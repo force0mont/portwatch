@@ -1,0 +1,11 @@
+{
+  "interval_seconds": 10,
+  "log_format": "json",
+  "rules": [
+    { "port": 22,   "protocol": "tcp", "action": "allow" },
+    { "port": 80,   "protocol": "tcp", "action": "allow" },
+    { "port": 443,  "protocol": "tcp", "action": "allow" },
+    { "port": 53,   "protocol": "udp", "action": "allow" },
+    { "port": 3306, "protocol": "tcp", "action": "alert" }
+  ]
+}
