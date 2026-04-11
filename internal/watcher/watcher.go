@@ -1,69 +1,85 @@
-// Package watcher ties together the scanner, rules engine, and alerter
-// into a polling loop that monitors open ports at a configurable interval.
 package watcher
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"time"
 
-	"github.com/user/portwatch/internal/alerter"
-	"github.com/user/portwatch/internal/rules"
-	"github.com/user/portwatch/internal/scanner"
+	"github.com/jwhittle933/portwatch/internal/alerter"
+	"github.com/jwhittle933/portwatch/internal/metrics"
+	"github.com/jwhittle933/portwatch/internal/ratelimit"
+	"github.com/jwhittle933/portwatch/internal/rules"
+	"github.com/jwhittle933/portwatch/internal/scanner"
+	"github.com/jwhittle933/portwatch/internal/state"
 )
 
-// Watcher polls the system for open ports and evaluates each one against
-// the configured rule set, emitting alerts via the Alerter.
+// Watcher orchestrates periodic port scanning, rule evaluation, and alerting.
 type Watcher struct {
 	scanner  *scanner.Scanner
 	rules    *rules.Engine
 	alerter  *alerter.Alerter
+	state    *state.State
+	metrics  *metrics.Metrics
+	limiter  *ratelimit.Limiter
 	interval time.Duration
 }
 
-// New creates a Watcher with the given rules engine, alerter, and poll interval.
-func New(r *rules.Engine, a *alerter.Alerter, interval time.Duration) *Watcher {
+// New creates a Watcher with default rate-limit settings (burst=3, window=60s).
+func New(
+	sc *scanner.Scanner,
+	re *rules.Engine,
+	al *alerter.Alerter,
+	st *state.State,
+	me *metrics.Metrics,
+	interval time.Duration,
+) *Watcher {
 	return &Watcher{
-		scanner:  scanner.New(),
-		rules:    r,
-		alerter:  a,
+		scanner:  sc,
+		rules:    re,
+		alerter:  al,
+		state:    st,
+		metrics:  me,
+		limiter:  ratelimit.New(60*time.Second, 3),
 		interval: interval,
 	}
 }
 
-// Run starts the polling loop. It blocks until ctx is cancelled.
-func (w *Watcher) Run(ctx context.Context) {
+// Run starts the watch loop. It blocks until ctx is cancelled.
+func (w *Watcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
-
-	log.Printf("portwatch: starting watcher (interval=%s)", w.interval)
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("portwatch: watcher stopped")
-			return
+			return ctx.Err()
 		case <-ticker.C:
-			w.scan()
+			if err := w.tick(); err != nil {
+				return fmt.Errorf("watcher tick: %w", err)
+			}
 		}
 	}
 }
 
-// scan performs a single scan cycle.
-func (w *Watcher) scan() {
+func (w *Watcher) tick() error {
 	ports, err := w.scanner.Scan()
 	if err != nil {
-		log.Printf("portwatch: scan error: %v", err)
-		return
+		return err
 	}
+	w.metrics.IncScans()
+	w.metrics.AddPorts(len(ports))
+	w.limiter.Purge()
 
-	for _, p := range ports {
-		action := w.rules.Evaluate(p)
-		switch action {
-		case rules.ActionAlert:
-			w.alerter.EmitAlert(p)
-		case rules.ActionAllow:
-			w.alerter.EmitInfo(p)
+	events := w.state.Diff(ports)
+	for _, ev := range events {
+		action := w.rules.Evaluate(ev.Port)
+		key := fmt.Sprintf("%s:%d", ev.Port.Protocol, ev.Port.Port)
+		if action == rules.ActionAlert && w.limiter.Allow(key) {
+			w.metrics.IncAlerts()
+			w.alerter.EmitAlert(ev)
+		} else {
+			w.alerter.EmitInfo(ev)
 		}
 	}
+	return nil
 }
