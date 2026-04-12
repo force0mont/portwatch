@@ -81,3 +81,20 @@ func (a *Alerter) EmitInfo(proto string, port uint16, pid int) {
 		Action:    rules.ActionAllow,
 	})
 }
+
+// EmitForAction emits an event at the appropriate level for the given action.
+// ALERT-level actions produce an ALERT event; all others produce an INFO event.
+func (a *Alerter) EmitForAction(proto string, port uint16, pid int, action rules.Action) {
+	level := LevelInfo
+	if action == rules.ActionAlert {
+		level = LevelAlert
+	}
+	a.Emit(Event{
+		Timestamp: time.Now(),
+		Level:     level,
+		Proto:     proto,
+		Port:      port,
+		PID:       pid,
+		Action:    action,
+	})
+}
