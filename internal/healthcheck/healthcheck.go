@@ -21,8 +21,8 @@ type Server struct {
 
 // response is the JSON body returned by the health endpoint.
 type response struct {
-	Status    string          `json:"status"`
-	UptimeSec int64           `json:"uptime_sec"`
+	Status    string           `json:"status"`
+	UptimeSec int64            `json:"uptime_sec"`
 	Metrics   metrics.Snapshot `json:"metrics"`
 }
 
@@ -61,11 +61,16 @@ func (s *Server) Addr() string {
 	return s.addr
 }
 
+// Uptime returns the duration since the server was created.
+func (s *Server) Uptime() time.Duration {
+	return time.Since(s.started)
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	snap := s.metrics.Snapshot()
 	resp := response{
 		Status:    "ok",
-		UptimeSec: int64(time.Since(s.started).Seconds()),
+		UptimeSec: int64(s.Uptime().Seconds()),
 		Metrics:   snap,
 	}
 
