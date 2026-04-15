@@ -19,4 +19,7 @@
 //	for _, gone := range disappeared {
 //	    q.Evict(gone)
 //	}
+//
+//	// To reset all counters between full scan cycles (e.g. on scanner restart):
+//	q.Reset()
 package quorum
